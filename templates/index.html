@@ -10,6 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <script>
 /* ── Browser/Streamlit mode shim ──────────────────────────────────────────
    When window.BOOT is injected (Streamlit Community Cloud build), the existing
@@ -315,6 +316,22 @@
   .bubble pre code{background:none;padding:0}
   .bubble a{color:var(--accent)}
   .bubble strong{color:#fff;font-weight:600}
+  /* rendered diagrams / mockups */
+  .diagram{background:#fff;border:1px solid var(--border-soft);border-radius:11px;padding:12px;margin:.6em 0;overflow:auto}
+  .diagram svg{max-width:100%;height:auto;display:block;margin:0 auto}
+  .dtools{display:flex;gap:7px;margin:8px 0 2px;flex-wrap:wrap}
+  .dtools button{font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--surface);
+    color:var(--muted);border-radius:7px;padding:4px 9px;transition:var(--t);font-family:var(--body)}
+  .dtools button:hover{color:var(--text);border-color:var(--accent)}
+  .htmlprev{border:1px solid var(--border-soft);border-radius:11px;overflow:hidden;margin:.6em 0;background:var(--surface)}
+  .htmlprev .pbar{display:flex;gap:7px;padding:7px 9px;border-bottom:1px solid var(--border-soft)}
+  .htmlprev .pbar button{font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;
+    color:var(--muted);border-radius:7px;padding:3px 10px;font-family:var(--body)}
+  .htmlprev .pbar button.on{color:#04121f;background:linear-gradient(135deg,var(--accent-2),var(--accent));border-color:transparent}
+  .htmlprev iframe{width:100%;height:440px;border:none;background:#fff;display:block}
+  .htmlprev pre{display:none;margin:0;border:none;border-radius:0}
+  .htmlprev.code iframe{display:none}
+  .htmlprev.code pre{display:block}
   .typing{color:var(--faint)}
   .typing::after{content:"●";animation:blink 1.2s steps(3) infinite}
   @keyframes blink{0%{opacity:.3}50%{opacity:1}100%{opacity:.3}}
@@ -578,6 +595,7 @@ function renderMsgs(){
     return;
   }
   msgs.innerHTML=history.map(bubble).join('');
+  enhanceDiagrams(msgs);
   msgs.scrollTop=msgs.scrollHeight;
 }
 function avatar(a){return a?`<div class="av"><img src="${MASCOT}" alt=""></div>`:`<div class="av">我</div>`;}
@@ -596,6 +614,75 @@ function bubble(m){
 function typingBubble(){return `<div class="msg a">${avatar(true)}<div class="bubble"><span class="typing">思考中</span></div></div>`;}
 function render(md){try{return DOMPurify.sanitize(marked.parse(md||''));}catch(e){return escapeHtml(md);}}
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');}
+
+// ── render Claude's drawings: Mermaid diagrams, SVG, HTML/CSS mockups ──
+let _mermaidReady=false;
+function initMermaid(){
+  if(_mermaidReady||!window.mermaid)return;
+  try{mermaid.initialize({startOnLoad:false,theme:'default',securityLevel:'strict',fontFamily:'DM Sans, sans-serif'});_mermaidReady=true;}catch(e){}
+}
+function enhanceDiagrams(root){
+  initMermaid();
+  [...root.querySelectorAll('pre > code')].forEach(c=>{
+    const cls=c.className||'', txt=c.textContent, trimmed=txt.trim(), pre=c.closest('pre');
+    if(/language-mermaid/.test(cls)) renderMermaid(pre,txt);
+    else if(/language-svg/.test(cls) || trimmed.startsWith('<svg')) renderSVG(pre,trimmed);
+    else if(/language-html/.test(cls) && /<\w+[\s>]/.test(trimmed)) renderHTMLPreview(pre,txt);
+  });
+}
+async function renderMermaid(pre,code){
+  if(!window.mermaid)return;
+  try{
+    const {svg}=await mermaid.render('mmd'+Math.random().toString(36).slice(2),code);
+    const box=document.createElement('div');box.className='diagram';box.innerHTML=svg;
+    addTools(box,()=>box.querySelector('svg'),code);
+    pre.replaceWith(box);
+  }catch(e){}
+}
+function renderSVG(pre,svg){
+  try{
+    const clean=DOMPurify.sanitize(svg,{USE_PROFILES:{svg:true,svgFilters:true}});
+    if(!/<svg/i.test(clean))return;
+    const box=document.createElement('div');box.className='diagram';box.innerHTML=clean;
+    addTools(box,()=>box.querySelector('svg'),svg);
+    pre.replaceWith(box);
+  }catch(e){}
+}
+function renderHTMLPreview(pre,html){
+  const wrap=document.createElement('div');wrap.className='htmlprev';
+  const bar=document.createElement('div');bar.className='pbar';
+  const mk=(t,on)=>{const b=document.createElement('button');b.textContent=t;if(on)b.className='on';return b;};
+  const bP=mk('预览',true),bC=mk('代码',false),bO=mk('新窗口打开',false);
+  bar.append(bP,bC,bO);
+  const ifr=document.createElement('iframe');ifr.setAttribute('sandbox','');ifr.srcdoc=html;
+  const code=pre.cloneNode(true);
+  wrap.append(bar,ifr,code);
+  bP.onclick=()=>{wrap.classList.remove('code');bP.classList.add('on');bC.classList.remove('on');};
+  bC.onclick=()=>{wrap.classList.add('code');bC.classList.add('on');bP.classList.remove('on');};
+  bO.onclick=()=>{const w=window.open();if(w){w.document.open();w.document.write(html);w.document.close();}};
+  pre.replaceWith(wrap);
+}
+function addTools(box,getSvg,source){
+  const tools=document.createElement('div');tools.className='dtools';
+  let codeEl=null,shown=false;
+  const mk=(t,fn)=>{const b=document.createElement('button');b.textContent=t;b.onclick=fn;return b;};
+  const tog=mk('查看代码',()=>{
+    if(!codeEl){codeEl=document.createElement('pre');const c=document.createElement('code');c.textContent=source;codeEl.appendChild(c);box.appendChild(codeEl);}
+    shown=!shown;codeEl.style.display=shown?'block':'none';tog.textContent=shown?'隐藏代码':'查看代码';
+  });
+  tools.append(mk('下载 SVG',()=>downloadSVG(getSvg())),mk('下载 PNG',()=>downloadPNG(getSvg())),tog);
+  box.appendChild(tools);
+}
+function downloadSVG(svg){if(!svg)return;const s=new XMLSerializer().serializeToString(svg);trigger(new Blob([s],{type:'image/svg+xml'}),'diagram.svg');}
+function downloadPNG(svg){
+  if(!svg)return;const s=new XMLSerializer().serializeToString(svg);
+  const vb=svg.viewBox&&svg.viewBox.baseVal, w=(vb&&vb.width)||svg.clientWidth||900, h=(vb&&vb.height)||svg.clientHeight||600, sc=2;
+  const img=new Image();
+  img.onload=()=>{const cv=document.createElement('canvas');cv.width=w*sc;cv.height=h*sc;const x=cv.getContext('2d');
+    x.fillStyle='#fff';x.fillRect(0,0,cv.width,cv.height);x.drawImage(img,0,0,cv.width,cv.height);cv.toBlob(b=>trigger(b,'diagram.png'));};
+  img.src='data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(s)));
+}
+function trigger(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);}
 
 // ── file attachments ──
 let pendingAtts=[];
