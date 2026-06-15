@@ -148,8 +148,14 @@ def render_app():
         f'<option value="{mid}"{" selected" if mid == boot["default_model"] else ""}>{label}</option>'
         for mid, label in boot["models"].items())
     html = re.sub(r"\{%\s*for mid.*?\{%\s*endfor\s*%\}", opts, html, flags=re.S)
-    # inject BOOT (last thing in <head> so the fetch shim sees it)
-    html = html.replace("</head>", "<script>window.BOOT=" + json.dumps(boot, ensure_ascii=False) + ";</script></head>")
+    # inject BOOT as the LAST thing in <head> so the fetch shim sees it.
+    # IMPORTANT: replace only the FIRST </head> — the template also contains a
+    # literal "</head>" inside the exportDoc JS string; replacing all of them
+    # would inject the script into the middle of the main <script> and break it.
+    # Also escape "</" in the JSON so embedded content can't close the tag early.
+    boot_json = (json.dumps(boot, ensure_ascii=False)
+                 .replace("</", "<\\/").replace(" ", "\\u2028").replace(" ", "\\u2029"))
+    html = html.replace("</head>", "<script>window.BOOT=" + boot_json + ";</script></head>", 1)
     # resolve mascot references to the inlined data URI
     html = html.replace("/assets/mascot.png", boot["mascot"])
 
