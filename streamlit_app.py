@@ -56,7 +56,7 @@ def verify_streamax_credentials(email, password):
     clean = (email or "").strip()
     low = clean.lower()
     # test bypass accounts (same as the Sales Toolkit)
-    bypass = {"jerry_test": "Jerry", "hekun_test": "Hekun", "zntang_test": "ZNTang",
+    bypass = {"test": "Test", "jerry_test": "Jerry", "hekun_test": "Hekun", "zntang_test": "ZNTang",
               "jhsun_test": "JHSun", "test_account": "Success"}
     if low in bypass and password == "testme":
         return True, bypass[low]
