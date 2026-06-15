@@ -302,9 +302,15 @@
   .msg.u .av{background:var(--elevate);color:#cfe0ff;font-family:var(--head)}
   .msg.a .av{background:radial-gradient(circle at 50% 30%,rgba(34,211,238,.25),rgba(59,130,246,.12));border:1px solid var(--border)}
   .msg.a .av img{width:26px;height:26px;object-fit:contain}
+  .mcol{display:flex;flex-direction:column;gap:6px;min-width:0;max-width:348px}
   .bubble{background:var(--surface);border:1px solid var(--border-soft);border-radius:14px;padding:11px 14px;
-    font-size:13.5px;line-height:1.65;overflow-x:auto;max-width:348px}
+    font-size:13.5px;line-height:1.65;overflow-x:auto;max-width:100%}
   .msg.u .bubble{background:var(--surface-2);border-color:var(--border)}
+  .exporter{display:flex;gap:6px;flex-wrap:wrap;padding-left:2px}
+  .exporter button{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;cursor:pointer;
+    border:1px solid var(--border-soft);background:transparent;color:var(--faint);border-radius:7px;padding:3px 8px;
+    transition:var(--t);font-family:var(--body)}
+  .exporter button:hover{color:var(--accent);border-color:var(--accent)}
   .bubble p{margin:.45em 0}.bubble p:first-child{margin-top:0}.bubble p:last-child{margin-bottom:0}
   .bubble h1,.bubble h2,.bubble h3{margin:.7em 0 .35em;font-size:1.06em;font-family:var(--head)}
   .bubble ul,.bubble ol{margin:.45em 0;padding-left:1.35em}.bubble li{margin:.2em 0}
@@ -599,7 +605,7 @@ function renderMsgs(){
   msgs.scrollTop=msgs.scrollHeight;
 }
 function avatar(a){return a?`<div class="av"><img src="${MASCOT}" alt=""></div>`:`<div class="av">我</div>`;}
-function bubble(m){
+function bubble(m,i){
   const a=m.role==='assistant';
   const body=a?render(m.content):escapeHtml(m.content);
   let files='';
@@ -609,7 +615,16 @@ function bubble(m){
       return `<span class="fchip">${ic}${escapeHtml(f.name)}</span>`;
     }).join('')+`</div>`;
   }
-  return `<div class="msg ${a?'a':'u'}">${avatar(a)}<div class="bubble">${body||''}${files}</div></div>`;
+  let exporter='';
+  if(a && (m.content||'').trim()){
+    exporter=`<div class="exporter">
+      <button onclick="exportMD(${i})" title="下载 Markdown">Markdown</button>
+      <button onclick="exportDoc(${i})" title="导出 Word">Word</button>
+      <button onclick="exportPPT(${i})" title="导出 PPT">PPT</button>
+      <button onclick="exportPNG(${i})" title="导出图片">图片</button>
+    </div>`;
+  }
+  return `<div class="msg ${a?'a':'u'}">${avatar(a)}<div class="mcol"><div class="bubble" id="b${i}">${body||''}${files}</div>${exporter}</div></div>`;
 }
 function typingBubble(){return `<div class="msg a">${avatar(true)}<div class="bubble"><span class="typing">思考中</span></div></div>`;}
 function render(md){try{return DOMPurify.sanitize(marked.parse(md||''));}catch(e){return escapeHtml(md);}}
@@ -683,6 +698,66 @@ function downloadPNG(svg){
   img.src='data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(s)));
 }
 function trigger(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);}
+
+// ── export an AI answer to Markdown / Word / PPT / PNG (all client-side) ──
+const _libs={};
+function loadLib(src,glob){return new Promise((res,rej)=>{
+  if(glob&&window[glob])return res(window[glob]);
+  if(_libs[src])return _libs[src].then(res,rej);
+  _libs[src]=new Promise((rs,rj)=>{const s=document.createElement('script');s.src=src;
+    s.onload=()=>rs(glob?window[glob]:true);s.onerror=()=>rj(new Error('加载失败：'+src));document.head.appendChild(s);});
+  _libs[src].then(res,rej);
+});}
+function fname(ext){const d=new Date(),p=n=>String(n).padStart(2,'0');
+  return `锐明PM-${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.${ext}`;}
+function mdOf(i){return (history[i]&&history[i].content)||'';}
+
+function exportMD(i){trigger(new Blob([mdOf(i)],{type:'text/markdown;charset=utf-8'}),fname('md'));}
+
+async function exportDoc(i){
+  const inner=render(mdOf(i));
+  const full='<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" '+
+    'xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">'+
+    '<head><meta charset="utf-8"><style>body{font-family:Calibri,"PingFang SC",sans-serif;font-size:11pt;line-height:1.5;}'+
+    'h1,h2,h3{font-family:"Space Grotesk",Calibri,sans-serif;}table{border-collapse:collapse;}'+
+    'td,th{border:1px solid #999;padding:5px 8px;}code{background:#f2f2f2;padding:1px 4px;}</style></head><body>'+inner+'</body></html>';
+  try{
+    const hd=await loadLib('https://unpkg.com/html-docx-js/dist/html-docx.js','htmlDocx');
+    trigger(hd.asBlob(full),fname('docx'));
+  }catch(e){
+    trigger(new Blob(['﻿'+full],{type:'application/msword'}),fname('doc'));  // fallback: Word-openable .doc
+  }
+}
+
+async function exportPPT(i){
+  try{
+    await loadLib('https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js','PptxGenJS');
+    const md=mdOf(i), pptx=new PptxGenJS(); pptx.layout='LAYOUT_WIDE';
+    const slides=[]; let cur=null;
+    md.split('\n').forEach(ln=>{
+      const h=ln.match(/^(#{1,3})\s+(.*)/);
+      if(h){if(cur)slides.push(cur);cur={title:h[2].replace(/[#*`]/g,'').trim(),body:[]};}
+      else{const t=ln.replace(/^[\s>]*[-*]\s+/,'').replace(/[#*`]/g,'').trim();
+        if(t){if(!cur)cur={title:'锐明 PM 工作台',body:[]};cur.body.push(t);}}
+    });
+    if(cur)slides.push(cur);
+    if(!slides.length)slides.push({title:'锐明 PM 工作台',body:[md.replace(/[#*`]/g,'').trim()||'(空)']});
+    slides.forEach(s=>{const sl=pptx.addSlide();sl.background={color:'0B1120'};
+      sl.addText(s.title||' ',{x:0.5,y:0.35,w:12.3,h:0.9,fontSize:26,bold:true,color:'22D3EE',fontFace:'Arial'});
+      if(s.body.length)sl.addText(s.body.map(b=>({text:b,options:{bullet:true,breakLine:true}})),
+        {x:0.6,y:1.5,w:12,h:5.5,fontSize:16,color:'EAF0FB',fontFace:'Arial',valign:'top'});});
+    await pptx.writeFile({fileName:fname('pptx')});
+  }catch(e){alert('PPT 导出失败：'+e.message);}
+}
+
+async function exportPNG(i){
+  try{
+    await loadLib('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js','html2canvas');
+    const el=document.getElementById('b'+i); if(!el)return;
+    const canvas=await window.html2canvas(el,{backgroundColor:'#0b1120',scale:2,useCORS:true});
+    canvas.toBlob(b=>trigger(b,fname('png')));
+  }catch(e){alert('图片导出失败：'+e.message);}
+}
 
 // ── file attachments ──
 let pendingAtts=[];
