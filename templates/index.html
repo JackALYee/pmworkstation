@@ -302,7 +302,7 @@
   .msg.u .av{background:var(--elevate);color:#cfe0ff;font-family:var(--head)}
   .msg.a .av{background:radial-gradient(circle at 50% 30%,rgba(34,211,238,.25),rgba(59,130,246,.12));border:1px solid var(--border)}
   .msg.a .av img{width:26px;height:26px;object-fit:contain}
-  .mcol{display:flex;flex-direction:column;gap:6px;min-width:0;max-width:348px}
+  .mcol{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1 1 auto}
   .bubble{background:var(--surface);border:1px solid var(--border-soft);border-radius:14px;padding:11px 14px;
     font-size:13.5px;line-height:1.65;overflow-x:auto;max-width:100%}
   .msg.u .bubble{background:var(--surface-2);border-color:var(--border)}
@@ -618,7 +618,8 @@ function bubble(m,i){
   let exporter='';
   if(a && (m.content||'').trim()){
     exporter=`<div class="exporter">
-      <button onclick="exportMD(${i})" title="下载 Markdown">Markdown</button>
+      <button onclick="copyMD(${i},this)" title="以 Markdown 格式复制回复">复制 Markdown</button>
+      <button onclick="exportMD(${i})" title="下载 Markdown">下载 .md</button>
       <button onclick="exportDoc(${i})" title="导出 Word">Word</button>
       <button onclick="exportPPT(${i})" title="导出 PPT">PPT</button>
       <button onclick="exportPNG(${i})" title="导出图片">图片</button>
@@ -712,6 +713,18 @@ function fname(ext){const d=new Date(),p=n=>String(n).padStart(2,'0');
   return `锐明PM-${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.${ext}`;}
 function mdOf(i){return (history[i]&&history[i].content)||'';}
 
+async function copyMD(i,btn){
+  const md=mdOf(i);
+  try{ await navigator.clipboard.writeText(md); }
+  catch(e){
+    const ta=document.createElement('textarea');ta.value=md;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.focus();ta.select();
+    try{document.execCommand('copy');}catch(_){}
+    document.body.removeChild(ta);
+  }
+  if(btn){const t=btn.textContent;btn.textContent='✓ 已复制';btn.disabled=true;
+    setTimeout(()=>{btn.textContent=t;btn.disabled=false;},1500);}
+}
 function exportMD(i){trigger(new Blob([mdOf(i)],{type:'text/markdown;charset=utf-8'}),fname('md'));}
 
 async function exportDoc(i){
