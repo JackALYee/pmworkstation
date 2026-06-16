@@ -63,23 +63,40 @@
     }
     return out;
   }
+  // non-streaming request (used as a fallback when SSE is blocked by a proxy/iframe)
+  async function chatOnce(base,emit){
+    const resp=await realFetch(AN_URL,{method:'POST',headers:anHeaders(),
+      body:JSON.stringify(Object.assign({},base,{stream:false}))});
+    if(!resp.ok){emit({error:'Anthropic '+resp.status+'：'+(await resp.text()).slice(0,300)});return;}
+    const data=await resp.json();
+    emit({delta:(data.content||[]).map(b=>b.text||'').join('')});
+  }
   function chatStream(payload){
     const stream=new ReadableStream({async start(controller){
       const enc=new TextEncoder(), emit=o=>controller.enqueue(enc.encode('data: '+JSON.stringify(o)+'\n\n'));
+      let base, any=false;
       try{
         const msgs=await toMessages(payload.messages||[]);
-        const body={model:payload.model,max_tokens:4096,system:buildSystem(payload.skill),messages:msgs,stream:true};
-        const resp=await realFetch(AN_URL,{method:'POST',headers:anHeaders(),body:JSON.stringify(body)});
-        if(!resp.ok){emit({error:'Anthropic '+resp.status+'：'+(await resp.text()).slice(0,300)});controller.close();return;}
+        base={model:payload.model,max_tokens:4096,system:buildSystem(payload.skill),messages:msgs};
+      }catch(e){emit({error:'附件处理失败：'+e});emit({done:true});controller.close();return;}
+      try{
+        const resp=await realFetch(AN_URL,{method:'POST',headers:anHeaders(),
+          body:JSON.stringify(Object.assign({},base,{stream:true}))});
+        if(!resp.ok){emit({error:'Anthropic '+resp.status+'：'+(await resp.text()).slice(0,300)});emit({done:true});controller.close();return;}
         const reader=resp.body.getReader(), dec=new TextDecoder(); let buf='';
         while(true){const{value,done}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});
           const lines=buf.split('\n');buf=lines.pop();
           for(const ln of lines){const s=ln.trim();if(!s.startsWith('data:'))continue;const d=s.slice(5).trim();
             if(!d||d==='[DONE]')continue;let ev;try{ev=JSON.parse(d);}catch(e){continue;}
-            if(ev.type==='content_block_delta'&&ev.delta&&typeof ev.delta.text==='string')emit({delta:ev.delta.text});
+            if(ev.type==='content_block_delta'&&ev.delta&&typeof ev.delta.text==='string'){any=true;emit({delta:ev.delta.text});}
             else if(ev.type==='error')emit({error:(ev.error&&ev.error.message)||'error'});}}
         emit({done:true});controller.close();
-      }catch(e){emit({error:String(e)});controller.close();}
+      }catch(e){
+        if(any){emit({error:'连接中断：'+(e.message||e)});emit({done:true});controller.close();return;}
+        // streaming blocked before any output → retry once without streaming
+        try{await chatOnce(base,emit);}catch(e2){emit({error:'网络请求失败：'+(e2.message||e2)});}
+        emit({done:true});controller.close();
+      }
     }});
     return new Response(stream,{headers:{'Content-Type':'text/event-stream'}});
   }
