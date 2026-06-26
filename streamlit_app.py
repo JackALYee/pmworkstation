@@ -2,12 +2,12 @@
 # ── 锐明 PM 工作台 · Streamlit Community Cloud build ─────────────────────────
 # Wraps the exact Flask UI for Streamlit Cloud. Gates on Streamax email
 # (SMTP login to mail.streamax.com), then injects a `window.BOOT` payload +
-# the Anthropic key and embeds templates/index.html unchanged. In this mode
+# the DeepSeek key and embeds templates/index.html unchanged. In this mode
 # the page's fetch() shim (in index.html) serves /api/* from BOOT and calls
-# the Anthropic API directly from the browser.
+# the DeepSeek API directly from the browser.
 #
 # Deploy: push this repo to GitHub → Streamlit Community Cloud → main file
-# `streamlit_app.py`. Set secrets ANTHROPIC_API_KEY (and optionally
+# `streamlit_app.py`. Set secrets DEEPSEEK_API_KEY (and optionally
 # rebuild data with build_streamlit_data.py when skills/products change).
 # ───────────────────────────────────────────────────────────────────────────
 import os
@@ -137,9 +137,9 @@ def load_bundle():
 
 def render_app():
     boot = dict(load_bundle())
-    boot["apiKey"] = secret("ANTHROPIC_API_KEY")
+    boot["apiKey"] = secret("DEEPSEEK_API_KEY")
     if not boot["apiKey"]:
-        st.error("未配置 ANTHROPIC_API_KEY（请在 Streamlit Secrets 中设置）。")
+        st.error("未配置 DEEPSEEK_API_KEY（请在 Streamlit Secrets 中设置）。")
         return
 
     html = TEMPLATE.read_text(encoding="utf-8")

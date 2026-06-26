@@ -15,7 +15,7 @@ from pathlib import Path
 
 from flask import Flask, request, Response, jsonify, send_file, render_template
 
-import anthropic
+from openai import OpenAI  # DeepSeek is OpenAI-compatible
 
 # ── Paths (absolute — this app stitches together three sibling repos) ───────
 HERE = Path(__file__).resolve().parent
@@ -32,7 +32,9 @@ PRODUCT_IMAGES = Path(
 # Streamaxpedia product DB (115 SKUs + downloadable spec-sheet / user-manual URLs)
 # lives in salestoolkit/terminology_db.py — shared with Jerry GPT.
 SALESTOOLKIT_DIR = Path("/Users/jiachenyi/Desktop/Streamax/Sales Toolkit/salestoolkit")
-API_KEY_FILE = HERE / "Claude API PM.md"
+# DeepSeek key: env DEEPSEEK_API_KEY wins; else first sk-... token in this file.
+API_KEY_FILE = HERE / "Deepseek API.md"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 I18N_FILE = HERE / "i18n_zh.json"
 
 # Chinese translations of skill/command descriptions, keyed "plugin/kind/name".
@@ -41,13 +43,12 @@ try:
 except Exception:  # noqa: BLE001
     I18N = {}
 
-# ── Models offered in the UI ────────────────────────────────────────────────
+# ── Models offered in the UI (DeepSeek) ─────────────────────────────────────
 MODELS = {
-    "claude-sonnet-4-6": "Sonnet 4.6 · 均衡（默认）",
-    "claude-opus-4-8": "Opus 4.8 · 最强",
-    "claude-haiku-4-5-20251001": "Haiku 4.5 · 快速",
+    "deepseek-chat": "DeepSeek V3 · 通用（默认）",
+    "deepseek-reasoner": "DeepSeek R1 · 推理",
 }
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "deepseek-chat"
 
 # ── Module metadata: Chinese titles, icons, accent colors keyed by plugin ───
 # Order + colors mirror the pm-skills marketplace card layout.
@@ -76,14 +77,14 @@ def get_client():
         key = ""
         if API_KEY_FILE.exists():
             # File holds the raw key (possibly with a markdown header). Grab the
-            # first sk-ant-... token we can find.
+            # first sk-... token we can find.
             txt = API_KEY_FILE.read_text(encoding="utf-8", errors="ignore")
-            m = re.search(r"sk-ant-[A-Za-z0-9_\-]+", txt)
+            m = re.search(r"sk-[A-Za-z0-9_\-]+", txt)
             key = m.group(0) if m else txt.strip()
-        key = os.environ.get("ANTHROPIC_API_KEY", key)
+        key = os.environ.get("DEEPSEEK_API_KEY", key)
         if not key:
-            raise RuntimeError("未找到 Anthropic API Key（检查 Claude API PM.md）")
-        _client = anthropic.Anthropic(api_key=key)
+            raise RuntimeError("未找到 DeepSeek API Key（设置 DEEPSEEK_API_KEY 或填写 Deepseek API.md）")
+        _client = OpenAI(api_key=key, base_url=DEEPSEEK_BASE_URL)
     return _client
 
 
@@ -295,26 +296,16 @@ PERSONA = """你是「锐明 PM 工作台」内置的资深产品经理 AI 助�
 
 
 def build_system(skill_body=None, skill_label=None):
-    knowledge = "# 锐明产品与销售知识库（始终生效）\n\n" + load_streamax_block()
+    """Return the system prompt as a single string (DeepSeek/OpenAI format)."""
+    parts = [PERSONA, "# 锐明产品与销售知识库（始终生效）\n\n" + load_streamax_block()]
     pedia = build_pedia_block()
     if pedia:
-        knowledge += "\n\n" + pedia
-    blocks = [
-        {"type": "text", "text": PERSONA},
-        {
-            "type": "text",
-            "text": knowledge,
-            "cache_control": {"type": "ephemeral"},
-        },
-    ]
+        parts.append(pedia)
     if skill_body:
-        blocks.append({
-            "type": "text",
-            "text": (f"# 当前加载的 PM 方法论：{skill_label}\n\n"
+        parts.append(f"# 当前加载的 PM 方法论：{skill_label}\n\n"
                      "请严格依据以下框架与步骤来协助用户。这是本次对话要遵循的工作方法：\n\n"
-                     + skill_body),
-        })
-    return blocks
+                     + skill_body)
+    return "\n\n".join(parts)
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────
@@ -378,10 +369,7 @@ def product_image(fname):
     return send_file(str(f), mimetype=mt or "image/jpeg")
 
 
-# ── Attachments → Anthropic content blocks ──────────────────────────────────
-IMAGE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-
-
+# ── Attachments → plain text (DeepSeek is text-only) ────────────────────────
 def _extract_docx(raw):
     try:
         import io, docx  # noqa: PLC0415
@@ -413,45 +401,35 @@ def _extract_xlsx(raw):
         return f"(无法解析 Excel 表格: {e})"
 
 
-def msg_to_anthropic(m):
-    """Convert a frontend message {role, content, attachments?} into Anthropic
-    format — text stays a string; with attachments it becomes a content-block
-    list (image / pdf document / extracted-text)."""
+def msg_to_openai(m):
+    """Convert a frontend message {role, content, attachments?} into OpenAI/
+    DeepSeek format. DeepSeek is text-only, so attachments are folded into text
+    (docx/xlsx/text extracted; image/pdf get a note — the web build extracts
+    PDF text in-browser)."""
     role = m.get("role", "user")
-    text = m.get("content", "") or ""
-    atts = m.get("attachments") or []
-    if not atts:
-        return {"role": role, "content": text}
-    blocks = []
-    if text:
-        blocks.append({"type": "text", "text": text})
-    for a in atts:
+    chunks = []
+    if m.get("content"):
+        chunks.append(m["content"])
+    for a in (m.get("attachments") or []):
         name = a.get("name", "file")
-        mime = a.get("mime", "")
-        data = a.get("data", "")     # base64, no data: prefix
+        data = a.get("data", "")
         kind = a.get("kind", "")
         try:
-            if kind == "image" and mime in IMAGE_MIMES:
-                blocks.append({"type": "image", "source": {
-                    "type": "base64", "media_type": mime, "data": data}})
-            elif kind == "pdf" or mime == "application/pdf":
-                blocks.append({"type": "document", "source": {
-                    "type": "base64", "media_type": "application/pdf", "data": data}})
-            elif kind in ("docx", "xlsx", "text"):
+            if kind in ("docx", "xlsx", "text"):
                 import base64  # noqa: PLC0415
                 raw = base64.b64decode(data)
-                if kind == "docx":
-                    txt = _extract_docx(raw)
-                elif kind == "xlsx":
-                    txt = _extract_xlsx(raw)
-                else:
-                    txt = raw.decode("utf-8", "ignore")
-                blocks.append({"type": "text", "text": f"【附件：{name}】\n{txt[:60000]}"})
+                txt = _extract_docx(raw) if kind == "docx" else \
+                    _extract_xlsx(raw) if kind == "xlsx" else raw.decode("utf-8", "ignore")
+                chunks.append(f"【附件：{name}】\n{txt[:60000]}")
+            elif kind == "pdf":
+                chunks.append(f"【PDF 附件：{name} —— 本地 Flask 端未解析 PDF；请用网页版上传（浏览器会自动提取文本）】")
+            elif kind == "image":
+                chunks.append(f"【图片附件：{name} —— DeepSeek 模型不支持图像识别，请用文字描述图片内容】")
             else:
-                blocks.append({"type": "text", "text": f"【附件：{name}（暂不支持的类型 {mime}）】"})
+                chunks.append(f"【附件：{name}（暂不支持的类型）】")
         except Exception as e:  # noqa: BLE001
-            blocks.append({"type": "text", "text": f"【附件 {name} 处理失败：{e}】"})
-    return {"role": role, "content": blocks or text}
+            chunks.append(f"【附件 {name} 处理失败：{e}】")
+    return {"role": role, "content": "\n\n".join(chunks)}
 
 
 @app.route("/api/recommend", methods=["POST"])
@@ -482,10 +460,11 @@ def api_recommend():
     arr = []
     try:
         client = get_client()
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001", max_tokens=700,
-            system=sys_prompt, messages=[{"role": "user", "content": question}])
-        txt = "".join(getattr(b, "text", "") for b in resp.content)
+        resp = client.chat.completions.create(
+            model="deepseek-chat", max_tokens=700,
+            messages=[{"role": "system", "content": sys_prompt},
+                      {"role": "user", "content": question}])
+        txt = resp.choices[0].message.content or ""
         mj = re.search(r"\[.*\]", txt, re.S)
         arr = json.loads(mj.group(0)) if mj else []
     except Exception:  # noqa: BLE001
@@ -503,7 +482,7 @@ def api_recommend():
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     data = request.get_json(force=True)
-    messages = [msg_to_anthropic(m) for m in data.get("messages", [])]
+    convo = [msg_to_openai(m) for m in data.get("messages", [])]
     model = data.get("model", DEFAULT_MODEL)
     if model not in MODELS:
         model = DEFAULT_MODEL
@@ -515,19 +494,17 @@ def api_chat():
         skill_body = load_skill_body(sk.get("plugin", ""),
                                      sk.get("kind", "skill"), sk.get("name", ""))
 
-    system = build_system(skill_body, skill_label)
+    messages = [{"role": "system", "content": build_system(skill_body, skill_label)}] + convo
 
     def generate():
         try:
             client = get_client()
-            with client.messages.stream(
-                model=model,
-                max_tokens=4096,
-                system=system,
-                messages=messages,
-            ) as stream:
-                for text in stream.text_stream:
-                    yield f"data: {json.dumps({'delta': text})}\n\n"
+            stream = client.chat.completions.create(
+                model=model, max_tokens=4096, messages=messages, stream=True)
+            for chunk in stream:
+                piece = (chunk.choices[0].delta.content if chunk.choices else None)
+                if piece:
+                    yield f"data: {json.dumps({'delta': piece})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:  # noqa: BLE001
             yield f"data: {json.dumps({'error': str(e)})}\n\n"

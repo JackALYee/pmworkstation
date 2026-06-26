@@ -15,86 +15,91 @@
 /* ── Browser/Streamlit mode shim ──────────────────────────────────────────
    When window.BOOT is injected (Streamlit Community Cloud build), the existing
    frontend keeps calling fetch('/api/...') unchanged — this wrapper serves
-   those from injected data and calls the Anthropic API directly from the
-   browser (key from BOOT.apiKey). In Flask mode BOOT is undefined → passthrough. */
+   those from injected data and calls the DeepSeek API directly from the
+   browser (key from BOOT.apiKey). In Flask mode BOOT is undefined → passthrough.
+   Backend model: DeepSeek (OpenAI-compatible chat/completions). */
 (function(){
   const realFetch = window.fetch.bind(window);
-  const AN_URL = 'https://api.anthropic.com/v1/messages';
+  const DS_URL = 'https://api.deepseek.com/chat/completions';
   const json = o => new Response(JSON.stringify(o), {headers:{'Content-Type':'application/json'}});
-  const anHeaders = () => ({'x-api-key':window.BOOT.apiKey,'anthropic-version':'2023-06-01',
-    'anthropic-dangerous-direct-browser-access':'true','content-type':'application/json'});
+  const dsHeaders = () => ({'Authorization':'Bearer '+window.BOOT.apiKey,'content-type':'application/json'});
   const loaded={};
   function loadScript(src){return new Promise((res,rej)=>{if(loaded[src])return res();
     const s=document.createElement('script');s.src=src;s.onload=()=>{loaded[src]=1;res();};s.onerror=rej;document.head.appendChild(s);});}
   function b64ToBuf(b64){const bin=atob(b64),len=bin.length,a=new Uint8Array(len);for(let i=0;i<len;i++)a[i]=bin.charCodeAt(i);return a.buffer;}
   function b64ToUtf8(b64){try{return decodeURIComponent(escape(atob(b64)));}catch(e){return atob(b64);}}
 
-  function buildSystem(skill){
-    const b=[{type:'text',text:window.BOOT.persona},
-             {type:'text',text:window.BOOT.systemKnowledge,cache_control:{type:'ephemeral'}}];
+  function buildSysText(skill){
+    let s=window.BOOT.persona+'\n\n'+window.BOOT.systemKnowledge;
     if(skill && skill.name){
       const body=window.BOOT.bodies[skill.plugin+'/'+skill.kind+'/'+skill.name];
-      if(body) b.push({type:'text',text:'# 当前加载的 PM 方法论：'+(skill.label||skill.name)+
-        '\n\n请严格依据以下框架与步骤来协助用户。这是本次对话要遵循的工作方法：\n\n'+body});
+      if(body) s+='\n\n# 当前加载的 PM 方法论：'+(skill.label||skill.name)+
+        '\n\n请严格依据以下框架与步骤来协助用户。这是本次对话要遵循的工作方法：\n\n'+body;
     }
-    return b;
+    return s;
   }
-  async function extractFile(a){
-    if(a.kind==='image') return [{type:'image',source:{type:'base64',media_type:a.mime,data:a.data}}];
-    if(a.kind==='pdf')   return [{type:'document',source:{type:'base64',media_type:'application/pdf',data:a.data}}];
-    if(a.kind==='text')  return [{type:'text',text:'【附件：'+a.name+'】\n'+b64ToUtf8(a.data).slice(0,60000)}];
+  // DeepSeek (deepseek-chat / deepseek-reasoner) is TEXT-ONLY — extract everything to text.
+  async function extractText(a){
+    if(a.kind==='text')  return '【附件：'+a.name+'】\n'+b64ToUtf8(a.data).slice(0,60000);
     if(a.kind==='docx'){ await loadScript('https://cdn.jsdelivr.net/npm/mammoth/mammoth.browser.min.js');
       const r=await window.mammoth.extractRawText({arrayBuffer:b64ToBuf(a.data)});
-      return [{type:'text',text:'【附件：'+a.name+'】\n'+((r&&r.value)||'').slice(0,60000)}]; }
+      return '【附件：'+a.name+'】\n'+((r&&r.value)||'').slice(0,60000); }
     if(a.kind==='xlsx'){ await loadScript('https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js');
       const wb=window.XLSX.read(b64ToBuf(a.data),{type:'array'}); const out=[];
       wb.SheetNames.forEach(n=>{out.push('## 工作表: '+n);out.push(window.XLSX.utils.sheet_to_csv(wb.Sheets[n]));});
-      return [{type:'text',text:'【附件：'+a.name+'】\n'+out.join('\n').slice(0,60000)}]; }
-    return [{type:'text',text:'【附件：'+a.name+'（暂不支持的类型）】'}];
+      return '【附件：'+a.name+'】\n'+out.join('\n').slice(0,60000); }
+    if(a.kind==='pdf'){ await loadScript('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.js');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js';
+      const pdf=await window.pdfjsLib.getDocument({data:b64ToBuf(a.data)}).promise; let t='';
+      for(let p=1;p<=pdf.numPages;p++){const pg=await pdf.getPage(p);const tc=await pg.getTextContent();
+        t+=tc.items.map(it=>it.str).join(' ')+'\n';}
+      return '【附件：'+a.name+'（已提取文本）】\n'+t.slice(0,60000); }
+    if(a.kind==='image') return '【图片附件：'+a.name+' —— 当前 DeepSeek 模型不支持图像识别，请用文字描述图片内容后再发我】';
+    return '【附件：'+a.name+'（暂不支持的类型）】';
   }
   async function toMessages(messages){
     const out=[];
     for(const m of messages){
-      const atts=m.attachments||[];
-      if(!atts.length){out.push({role:m.role,content:m.content||''});continue;}
-      const blocks=[]; if(m.content) blocks.push({type:'text',text:m.content});
-      for(const a of atts){try{blocks.push(...await extractFile(a));}catch(e){blocks.push({type:'text',text:'【附件 '+a.name+' 处理失败】'});}}
-      out.push({role:m.role,content:blocks.length?blocks:(m.content||'')});
+      let content=m.content||'';
+      for(const a of (m.attachments||[])){
+        try{content+='\n\n'+await extractText(a);}catch(e){content+='\n\n【附件 '+a.name+' 处理失败】';}
+      }
+      out.push({role:m.role,content:content});
     }
     return out;
   }
-  // non-streaming request (used as a fallback when SSE is blocked by a proxy/iframe)
-  async function chatOnce(base,emit){
-    const resp=await realFetch(AN_URL,{method:'POST',headers:anHeaders(),
-      body:JSON.stringify(Object.assign({},base,{stream:false}))});
-    if(!resp.ok){emit({error:'Anthropic '+resp.status+'：'+(await resp.text()).slice(0,300)});return;}
+  function bodyFor(payload,msgs,stream){
+    return {model:payload.model,max_tokens:4096,stream:stream,
+      messages:[{role:'system',content:buildSysText(payload.skill)}].concat(msgs)};
+  }
+  // non-streaming request (fallback when SSE is blocked by a proxy/iframe)
+  async function chatOnce(payload,msgs,emit){
+    const resp=await realFetch(DS_URL,{method:'POST',headers:dsHeaders(),body:JSON.stringify(bodyFor(payload,msgs,false))});
+    if(!resp.ok){emit({error:'DeepSeek '+resp.status+'：'+(await resp.text()).slice(0,300)});return;}
     const data=await resp.json();
-    emit({delta:(data.content||[]).map(b=>b.text||'').join('')});
+    emit({delta:(((data.choices||[])[0]||{}).message||{}).content||''});
   }
   function chatStream(payload){
     const stream=new ReadableStream({async start(controller){
       const enc=new TextEncoder(), emit=o=>controller.enqueue(enc.encode('data: '+JSON.stringify(o)+'\n\n'));
-      let base, any=false;
+      let msgs, any=false;
+      try{ msgs=await toMessages(payload.messages||[]); }
+      catch(e){emit({error:'附件处理失败：'+e});emit({done:true});controller.close();return;}
       try{
-        const msgs=await toMessages(payload.messages||[]);
-        base={model:payload.model,max_tokens:4096,system:buildSystem(payload.skill),messages:msgs};
-      }catch(e){emit({error:'附件处理失败：'+e});emit({done:true});controller.close();return;}
-      try{
-        const resp=await realFetch(AN_URL,{method:'POST',headers:anHeaders(),
-          body:JSON.stringify(Object.assign({},base,{stream:true}))});
-        if(!resp.ok){emit({error:'Anthropic '+resp.status+'：'+(await resp.text()).slice(0,300)});emit({done:true});controller.close();return;}
+        const resp=await realFetch(DS_URL,{method:'POST',headers:dsHeaders(),body:JSON.stringify(bodyFor(payload,msgs,true))});
+        if(!resp.ok){emit({error:'DeepSeek '+resp.status+'：'+(await resp.text()).slice(0,300)});emit({done:true});controller.close();return;}
         const reader=resp.body.getReader(), dec=new TextDecoder(); let buf='';
         while(true){const{value,done}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});
           const lines=buf.split('\n');buf=lines.pop();
           for(const ln of lines){const s=ln.trim();if(!s.startsWith('data:'))continue;const d=s.slice(5).trim();
             if(!d||d==='[DONE]')continue;let ev;try{ev=JSON.parse(d);}catch(e){continue;}
-            if(ev.type==='content_block_delta'&&ev.delta&&typeof ev.delta.text==='string'){any=true;emit({delta:ev.delta.text});}
-            else if(ev.type==='error')emit({error:(ev.error&&ev.error.message)||'error'});}}
+            const piece=(((ev.choices||[])[0]||{}).delta||{}).content;
+            if(typeof piece==='string'&&piece){any=true;emit({delta:piece});}}}
         emit({done:true});controller.close();
       }catch(e){
         if(any){emit({error:'连接中断：'+(e.message||e)});emit({done:true});controller.close();return;}
         // streaming blocked before any output → retry once without streaming
-        try{await chatOnce(base,emit);}catch(e2){emit({error:'网络请求失败：'+(e2.message||e2)});}
+        try{await chatOnce(payload,msgs,emit);}catch(e2){emit({error:'网络请求失败：'+(e2.message||e2)});}
         emit({done:true});controller.close();
       }
     }});
@@ -111,10 +116,10 @@
       "用 JSON 数组返回，每项 {\"key\":\"...\",\"reason\":\"一句话中文说明为什么相关\"}。若都不相关返回 []。只输出 JSON。\n\n【技能清单】\n"+lines.join('\n');
     let arr=[];
     try{
-      const resp=await realFetch(AN_URL,{method:'POST',headers:anHeaders(),body:JSON.stringify(
-        {model:'claude-haiku-4-5-20251001',max_tokens:700,system:sys,messages:[{role:'user',content:question}]})});
+      const resp=await realFetch(DS_URL,{method:'POST',headers:dsHeaders(),body:JSON.stringify(
+        {model:'deepseek-chat',max_tokens:700,stream:false,messages:[{role:'system',content:sys},{role:'user',content:question}]})});
       const data=await resp.json();
-      const txt=(data.content||[]).map(b=>b.text||'').join('');
+      const txt=(((data.choices||[])[0]||{}).message||{}).content||'';
       const mj=txt.match(/\[[\s\S]*\]/); arr=mj?JSON.parse(mj[0]):[];
     }catch(e){arr=[];}
     const out=[];for(const it of arr){if(idx[it.key])out.push(Object.assign({},idx[it.key],{reason:it.reason||''}));}

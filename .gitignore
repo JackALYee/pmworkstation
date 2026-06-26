@@ -3,4 +3,5 @@ __pycache__/
 server.log
 # secrets — never commit
 Claude API PM.md
+Deepseek API.md
 .streamlit/secrets.toml

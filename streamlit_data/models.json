@@ -1,1 +1,1 @@
-{"models": {"claude-sonnet-4-6": "Sonnet 4.6 · 均衡（默认）", "claude-opus-4-8": "Opus 4.8 · 最强", "claude-haiku-4-5-20251001": "Haiku 4.5 · 快速"}, "default": "claude-sonnet-4-6"}
+{"models": {"deepseek-chat": "DeepSeek V3 · 通用（默认）", "deepseek-reasoner": "DeepSeek R1 · 推理"}, "default": "deepseek-chat"}

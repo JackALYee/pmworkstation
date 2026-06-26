@@ -5,13 +5,13 @@
 ## 启动
 
 ```bash
-cd "/Users/jiachenyi/Desktop/Streamax/PM工作台"
+cd "/Users/jiachenyi/Desktop/Streamax/pmworkstation"
 ./.venv/bin/python server.py
 ```
 
 打开浏览器访问 **http://127.0.0.1:7860**
 
-> 首次环境已配好：`.venv` 里装好了 `flask` + `anthropic`。如需重建：
+> 环境在 `.venv` 里（flask + openai 等）。如需重建：
 > `python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt`
 
 ## 怎么用
@@ -20,11 +20,11 @@ cd "/Users/jiachenyi/Desktop/Streamax/PM工作台"
 2. **加载技能** — 在模块里点「加载到对话」，该方法论（SKILL.md / 命令）即作为本次对话的工作框架，AI 会严格按其步骤推进。
 3. **自由对话** — 也可不加载技能直接提问。无论是否加载，**所有回答都内置锐明产品知识**。
 4. **产品库** — 点任一产品图，AI 结合该型号规格 / 定价 / 卖点展开。
-5. **模型切换** — 右上角可选 Sonnet 4.6（默认）/ Opus 4.8 / Haiku 4.5。
+5. **模型切换** — 右上角可选 DeepSeek V3（默认，通用）/ DeepSeek R1（推理）。
 
 ## 架构
 
-- `server.py` — Flask 后端：托管界面、代理 Claude API（**密钥仅在服务端**，读取自 `Claude API PM.md`）、实时从磁盘读取技能库与锐明知识。
+- `server.py` — Flask 后端：托管界面、代理 DeepSeek API（**密钥仅在服务端**，读取自环境变量 `DEEPSEEK_API_KEY` 或 `Deepseek API.md`）、实时从磁盘读取技能库与锐明知识。
 - `templates/index.html` — 单文件前端（原生 JS + marked 渲染 Markdown，SSE 流式）。
 - `i18n_zh.json` — 技能/命令解释的中文译文（界面显示中文，卡片右上角 `?` 悬浮显示英文原注释）。
 - 数据源（实时读取，改了即生效，无需重启重建）：
@@ -44,4 +44,4 @@ cd "/Users/jiachenyi/Desktop/Streamax/PM工作台"
 
 ## 安全提示
 
-`Claude API PM.md` 含明文 API Key，密钥只在后端使用、不会下发到浏览器。请勿将本目录提交到公开仓库。
+`Deepseek API.md` / `.streamlit/secrets.toml` 含明文 API Key（均已 gitignore）。注意：Streamlit Cloud 版会在登录后把 Key 注入浏览器，请用设了用量上限的 Key。
